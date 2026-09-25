@@ -1,0 +1,77 @@
+x-common:
+  &common
+  image: airflow-spark
+  user: "${AIRFLOW_UID}:0"
+  env_file: 
+    - .env
+  environment:
+    PYTHONPATH: /home/airflow/.local/lib/python3.7/site-packages
+    AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: 5
+    AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD: 1800
+    AIRFLOW__SCHEDULER__ZOMBIE_TASK_THRESHOLD: 1800
+    AIRFLOW__WEBSERVER__WORKERS: 1
+    AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: 300
+
+  volumes:
+     - ./dags:/opt/airflow/dags
+     - ./logs:/opt/airflow/logs
+     - ./pipelines:/opt/airflow/pipelines
+     - ./database:/opt/airflow/database
+     - ./data:/opt/airflow/data
+     - /var/run/docker.sock:/var/run/docker.sock
+
+x-depends-on:
+  &depends-on
+  depends_on:
+    postgres:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    env_file:
+      - .env
+
+  scheduler:
+    <<: [*common, *depends-on]
+    # <<: *depends-on
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: on-failure
+    ports:
+      - "8793:8793"
+
+  webserver:
+    <<: [*common, *depends-on]
+    # <<: *common
+    # <<: *depends-on
+    container_name: airflow-webserver
+    restart: always
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+  
+  airflow-init:
+    <<: *common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
